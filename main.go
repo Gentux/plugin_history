@@ -26,6 +26,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"time"
 
 	"github.com/boltdb/bolt"
 	"github.com/dullgiulio/pingo"
@@ -41,11 +42,22 @@ type History struct {
 	g_HistoryDb     *bolt.DB
 }
 
-type HistoryInfo struct {
+type HistoryParam struct {
 	UserId       string
 	ConnectionId string
 	StartDate    string
 	EndDate      string
+}
+
+type HistoryInfo struct {
+	UserId       string
+	ConnectionId string
+	Stats        []HistoryAtom
+}
+
+type HistoryAtom struct {
+	StartDate string
+	EndDate   string
 }
 
 func (p *History) Configure(jsonConfig string, _outMsg *string) error {
@@ -77,7 +89,11 @@ func (p *History) Configure(jsonConfig string, _outMsg *string) error {
 }
 
 func (p *History) GetList(args string, histories *[]HistoryInfo) error {
-	var history HistoryInfo
+	var (
+		history HistoryInfo
+		stats   []HistoryAtom
+	)
+	fmt.Println("GET HISTORY")
 
 	e := p.g_HistoryDb.View(func(tx *bolt.Tx) error {
 		bucket := tx.Bucket([]byte(p.g_HistoryConfig.DatabaseName))
@@ -87,8 +103,12 @@ func (p *History) GetList(args string, histories *[]HistoryInfo) error {
 
 		cursor := bucket.Cursor()
 		for key, value := cursor.First(); key != nil; key, value = cursor.Next() {
-			history = HistoryInfo{}
-			json.Unmarshal(value, &history)
+			json.Unmarshal(value, &stats)
+			history = HistoryInfo{
+				UserId:       string(key),
+				ConnectionId: string(key),
+				Stats:        stats,
+			}
 			*histories = append(*histories, history)
 		}
 
@@ -103,7 +123,10 @@ func (p *History) GetList(args string, histories *[]HistoryInfo) error {
 }
 
 func (p *History) Add(jsonParams string, _outMsg *string) error {
-	var params HistoryInfo
+	var (
+		params HistoryParam
+		stats  []HistoryAtom
+	)
 
 	e := json.Unmarshal([]byte(jsonParams), &params)
 	if e != nil {
@@ -114,13 +137,27 @@ func (p *History) Add(jsonParams string, _outMsg *string) error {
 		return nil
 	}
 
-	e = p.g_HistoryDb.Update(func(tx *bolt.Tx) error {
+	if _, err := time.Parse("Mon Jan 2 15:04:05 MST 2006", params.StartDate); err != nil {
+		return errors.New(fmt.Sprintf("Can't parse StartDate : «%s»", params.StartDate))
+	}
+	if _, err := time.Parse("Mon Jan 2 15:04:05 MST 2006", params.EndDate); err != nil {
+		return errors.New(fmt.Sprintf("Can't parse EndDate : «%s»", params.StartDate))
+	}
+
+	e = p.g_HistoryDb.Batch(func(tx *bolt.Tx) error {
 		bucket := tx.Bucket([]byte(p.g_HistoryConfig.DatabaseName))
 		if bucket == nil {
 			return errors.New(fmt.Sprintf("Bucket '%s' doesn't exist", p.g_HistoryConfig.DatabaseName))
 		}
 
-		jsonHistory, e := json.Marshal(params)
+		statsJson := bucket.Get([]byte(params.ConnectionId))
+		json.Unmarshal(statsJson, &stats)
+
+		stats = append(stats, HistoryAtom{
+			StartDate: params.StartDate,
+			EndDate:   params.EndDate,
+		})
+		jsonHistory, e := json.Marshal(stats)
 		bucket.Put([]byte(params.ConnectionId), jsonHistory)
 
 		return e
